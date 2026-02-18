@@ -3938,12 +3938,15 @@ async function startSpeakFromSelection(): Promise<boolean> {
                 attemptResolve(new Error('ElevenLabs TTS configuration is missing.'));
                 return;
               }
+              // Use runtime voice if set, otherwise fall back to config
+              const runtimeVoiceId = String(speakRuntimeOptions.voice || '').trim();
+              const voiceId = runtimeVoiceId || elevenLabsTts.voiceId;
               synthesizeElevenLabsToFile({
                 text: session.chunks[index],
                 audioPath,
                 apiKey: elevenLabsApiKey,
                 modelId: elevenLabsTts.modelId,
-                voiceId: elevenLabsTts.voiceId,
+                voiceId,
                 timeoutMs: 45000,
               }).then(() => attemptResolve(null)).catch((err: any) => {
                 const message = String(err?.message || err || 'ElevenLabs TTS failed');
