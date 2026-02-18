@@ -97,6 +97,9 @@ export function useSpeakManager({
   const [edgeTtsVoices, setEdgeTtsVoices] = useState<EdgeTtsVoice[]>([]);
   const [elevenLabsVoices, setElevenLabsVoices] = useState<ElevenLabsVoice[]>([]);
   const [configuredEdgeTtsVoice, setConfiguredEdgeTtsVoice] = useState('en-US-EricNeural');
+  
+  // Cache for ElevenLabs voices to avoid excessive API calls
+  const elevenLabsCacheRef = useRef<{ voices: ElevenLabsVoice[]; timestamp: number } | null>(null);
   const [configuredTtsModel, setConfiguredTtsModel] = useState('edge-tts');
 
   const speakSessionShownRef = useRef(false);
@@ -156,7 +159,7 @@ export function useSpeakManager({
     };
   }, []);
 
-  // ElevenLabs custom voice list fetch
+  // ElevenLabs custom voice list fetch (with 5-minute cache)
   useEffect(() => {
     let disposed = false;
     // Only fetch when using ElevenLabs
@@ -164,11 +167,25 @@ export function useSpeakManager({
       setElevenLabsVoices([]);
       return;
     }
+    
+    // Check cache first (5 minute TTL)
+    const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+    const now = Date.now();
+    if (elevenLabsCacheRef.current && (now - elevenLabsCacheRef.current.timestamp) < CACHE_TTL) {
+      setElevenLabsVoices(elevenLabsCacheRef.current.voices);
+      return;
+    }
+    
     window.electron.elevenLabsListVoices()
       .then((result) => {
         if (disposed) return;
         if (result.voices) {
           setElevenLabsVoices(result.voices);
+          // Update cache
+          elevenLabsCacheRef.current = {
+            voices: result.voices,
+            timestamp: Date.now(),
+          };
         }
       })
       .catch(() => {
