@@ -246,6 +246,7 @@ let oauthBlurHideSuppressionDepth = 0; // Keep launcher alive while OAuth browse
 let oauthBlurHideSuppressionTimer: NodeJS.Timeout | null = null;
 const OAUTH_BLUR_SUPPRESSION_TIMEOUT_MS = 3 * 60 * 1000;
 let currentShortcut = '';
+const DEVTOOLS_SHORTCUT = normalizeAccelerator('CommandOrControl+Option+I');
 let globalShortcutRegistrationState: {
   requestedShortcut: string;
   activeShortcut: string;
@@ -301,6 +302,7 @@ let snippetExpanderProcess: any = null;
 let snippetExpanderStdoutBuffer = '';
 let nativeSpeechProcess: any = null;
 let nativeSpeechStdoutBuffer = '';
+let nativeColorPickerPromise: Promise<any> | null = null;
 let whisperHoldWatcherProcess: any = null;
 let whisperHoldWatcherStdoutBuffer = '';
 let whisperHoldRequestSeq = 0;
@@ -3234,6 +3236,37 @@ function hideWindow(): void {
   setLauncherMode('default');
 }
 
+function openPreferredDevTools(): boolean {
+  const focusedWindow = BrowserWindow.getFocusedWindow();
+  const candidates = [
+    focusedWindow,
+    mainWindow,
+    settingsWindow,
+    extensionStoreWindow,
+    promptWindow,
+  ];
+  const seen = new Set<number>();
+
+  for (const win of candidates) {
+    if (!win || win.isDestroyed()) continue;
+    if (seen.has(win.id)) continue;
+    seen.add(win.id);
+    try {
+      if (!win.isVisible()) {
+        win.show();
+      }
+    } catch {}
+    try {
+      win.webContents.openDevTools({ mode: 'detach', activate: true });
+      return true;
+    } catch (error) {
+      console.warn('[DevTools] Failed opening devtools for window:', error);
+    }
+  }
+
+  return false;
+}
+
 async function activateLastFrontmostApp(): Promise<boolean> {
   if (!lastFrontmostApp) return false;
   const { execFile } = require('child_process');
@@ -5244,6 +5277,26 @@ function registerCommandHotkeys(hotkeys: Record<string, string>): void {
   syncFnSpeakToggleWatcher(hotkeys);
 }
 
+function registerDevToolsShortcut(): void {
+  try {
+    unregisterShortcutVariants(DEVTOOLS_SHORTCUT);
+  } catch {}
+
+  try {
+    const success = globalShortcut.register(DEVTOOLS_SHORTCUT, () => {
+      const opened = openPreferredDevTools();
+      if (!opened) {
+        console.warn('[DevTools] No window available to open developer tools.');
+      }
+    });
+    if (!success) {
+      console.warn(`[DevTools] Failed to register shortcut: ${DEVTOOLS_SHORTCUT}`);
+    }
+  } catch (error) {
+    console.warn(`[DevTools] Error registering shortcut: ${DEVTOOLS_SHORTCUT}`, error);
+  }
+}
+
 // ─── App Initialization ─────────────────────────────────────────────
 
 async function rebuildExtensions() {
@@ -5387,6 +5440,10 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('hide-window', () => {
     hideWindow();
+  });
+
+  ipcMain.handle('open-devtools', () => {
+    return openPreferredDevTools();
   });
 
   ipcMain.handle('close-prompt-window', () => {
@@ -7841,36 +7898,73 @@ return appURL's |path|() as text`,
   // ─── IPC: Native Color Picker ──────────────────────────────────
 
   ipcMain.handle('native-pick-color', async () => {
-    const { execFile } = require('child_process');
+    if (nativeColorPickerPromise) {
+      return nativeColorPickerPromise;
+    }
+
+    nativeColorPickerPromise = (async () => {
+    const { execFile, execFileSync } = require('child_process');
+    const fsNative = require('fs');
     const colorPickerPath = getNativeBinaryPath('color-picker');
+
+    // Build on demand in development when binary artifacts are missing.
+    if (!fsNative.existsSync(colorPickerPath)) {
+      try {
+        const sourceCandidates = [
+          path.join(app.getAppPath(), 'src', 'native', 'color-picker.swift'),
+          path.join(process.cwd(), 'src', 'native', 'color-picker.swift'),
+          path.join(__dirname, '..', '..', 'src', 'native', 'color-picker.swift'),
+        ];
+        const sourcePath = sourceCandidates.find((candidate: string) => fsNative.existsSync(candidate));
+        if (!sourcePath) {
+          console.warn('[ColorPicker] Binary and source file not found.');
+          return null;
+        }
+        fsNative.mkdirSync(path.dirname(colorPickerPath), { recursive: true });
+        execFileSync('swiftc', ['-O', '-o', colorPickerPath, sourcePath, '-framework', 'AppKit']);
+      } catch (error) {
+        console.error('[ColorPicker] Failed to compile native helper:', error);
+        return null;
+      }
+    }
 
     // Keep the launcher open while the native picker is focused.
     suppressBlurHide = true;
-    const pickedColor = await new Promise((resolve) => {
-      execFile(colorPickerPath, (error: any, stdout: string) => {
-        if (error) {
-          console.error('Color picker failed:', error);
-          resolve(null);
-          return;
-        }
+    try {
+      const pickedColor = await new Promise((resolve) => {
+        execFile(colorPickerPath, (error: any, stdout: string) => {
+          if (error) {
+            console.error('Color picker failed:', error);
+            resolve(null);
+            return;
+          }
 
-        const trimmed = stdout.trim();
-        if (trimmed === 'null' || !trimmed) {
-          resolve(null);
-          return;
-        }
+          const trimmed = stdout.trim();
+          if (trimmed === 'null' || !trimmed) {
+            resolve(null);
+            return;
+          }
 
-        try {
-          const color = JSON.parse(trimmed);
-          resolve(color);
-        } catch (e) {
-          console.error('Failed to parse color picker output:', e);
-          resolve(null);
-        }
+          try {
+            const color = JSON.parse(trimmed);
+            resolve(color);
+          } catch (e) {
+            console.error('Failed to parse color picker output:', e);
+            resolve(null);
+          }
+        });
       });
-    });
-    suppressBlurHide = false;
-    return pickedColor;
+      return pickedColor;
+    } finally {
+      suppressBlurHide = false;
+    }
+    })();
+
+    try {
+      return await nativeColorPickerPromise;
+    } finally {
+      nativeColorPickerPromise = null;
+    }
   });
 
   // ─── IPC: Native File Picker (for Form.FilePicker) ───────────────
@@ -7950,22 +8044,26 @@ return appURL's |path|() as text`,
 
   // Update / create a menu-bar Tray when the renderer sends menu structure
   ipcMain.on('menubar-update', (_event: any, data: any) => {
-    const { extId, iconPath, iconEmoji, title, tooltip, items } = data;
+    const { extId, iconPath, iconDataUrl, iconEmoji, iconTemplate, fallbackIconDataUrl, title, tooltip, items } = data;
 
     let tray = menuBarTrays.get(extId);
 
-    const createNativeImageFromMenuIconPath = (pathValue: string, size: number) => {
+    const createNativeImageFromMenuIcon = (payload: { pathValue?: string; dataUrlValue?: string }, size: number) => {
       try {
         const fs = require('fs');
-        if (!pathValue || !fs.existsSync(pathValue)) return null;
-        const isSvg = /\.svg$/i.test(pathValue);
         let image: any;
-        if (isSvg) {
-          const svg = fs.readFileSync(pathValue, 'utf8');
-          const svgDataUrl = `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
-          image = nativeImage.createFromDataURL(svgDataUrl);
+        const dataUrlValue = String(payload?.dataUrlValue || '').trim();
+        const pathValue = String(payload?.pathValue || '').trim();
+        if (dataUrlValue.startsWith('data:')) {
+          image = nativeImage.createFromDataURL(dataUrlValue);
         } else {
+          if (!pathValue || !fs.existsSync(pathValue)) return null;
           image = nativeImage.createFromPath(pathValue);
+          if ((!image || image.isEmpty()) && /\.svg$/i.test(pathValue)) {
+            const svg = fs.readFileSync(pathValue, 'utf8');
+            const svgDataUrl = `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
+            image = nativeImage.createFromDataURL(svgDataUrl);
+          }
         }
         if (!image || image.isEmpty()) return null;
         return image.resize({ width: size, height: size });
@@ -7974,14 +8072,31 @@ return appURL's |path|() as text`,
       }
     };
 
+    let lastResolvedTrayIconOk = false;
     const resolveTrayIcon = () => {
-      const img = iconPath ? createNativeImageFromMenuIconPath(iconPath, 18) : null;
+      const primaryImg = createNativeImageFromMenuIcon({ pathValue: iconPath, dataUrlValue: iconDataUrl }, 18);
+      const usingPrimary = Boolean(primaryImg);
+      const img =
+        primaryImg ||
+        createNativeImageFromMenuIcon({ dataUrlValue: fallbackIconDataUrl }, 18);
+      lastResolvedTrayIconOk = Boolean(img);
       if (img) {
+        // Raycast icon tokens are serialized as data URLs and should be template images
+        // so macOS can adapt them to menu bar foreground contrast.
+        const isGeneratedDataUrl = typeof iconDataUrl === 'string' && iconDataUrl.startsWith('data:');
         // Keep template rendering for bitmap assets (classic menubar style).
-        // For SVGs, preserve source appearance (e.g., explicit light/dark icon variants).
+        // For SVG asset paths, preserve source appearance (e.g., explicit light/dark icon variants).
         const isSvg = /\.svg$/i.test(iconPath || '');
+        const shouldTemplate =
+          !usingPrimary
+            ? false
+            : (
+                typeof iconTemplate === 'boolean'
+                  ? iconTemplate
+                  : (isGeneratedDataUrl ? true : !isSvg)
+              );
         try {
-          img.setTemplateImage(!isSvg);
+          img.setTemplateImage(shouldTemplate);
         } catch {}
         return img;
       }
@@ -8002,7 +8117,7 @@ return appURL's |path|() as text`,
       tray.setTitle(title);
     } else if (iconEmoji) {
       tray.setTitle(iconEmoji);
-    } else if (!iconPath) {
+    } else if (!lastResolvedTrayIconOk) {
       // Keep tray visible even when extension provides neither icon nor title.
       tray.setTitle('⏱');
     } else {
@@ -8030,25 +8145,32 @@ return appURL's |path|() as text`,
   // Route native menu clicks back to the renderer
   function buildMenuBarTemplate(items: any[], extId: string): any[] {
     const resolveMenuItemIcon = (item: any) => {
+      const iconDataUrl = typeof item?.iconDataUrl === 'string' ? item.iconDataUrl.trim() : '';
       const iconPath = typeof item?.iconPath === 'string' ? item.iconPath : '';
-      if (!iconPath) return undefined;
+      const explicitTemplate = typeof item?.iconTemplate === 'boolean' ? item.iconTemplate : undefined;
       try {
-        const fs = require('fs');
-        if (!fs.existsSync(iconPath)) return undefined;
-        const isSvg = /\.svg$/i.test(iconPath);
         let img: any;
-        if (isSvg) {
-          const svg = fs.readFileSync(iconPath, 'utf8');
-          const svgDataUrl = `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
-          img = nativeImage.createFromDataURL(svgDataUrl);
+        if (iconDataUrl.startsWith('data:')) {
+          img = nativeImage.createFromDataURL(iconDataUrl);
         } else {
+          if (!iconPath) return undefined;
+          const fs = require('fs');
+          if (!fs.existsSync(iconPath)) return undefined;
           img = nativeImage.createFromPath(iconPath);
+          if ((!img || img.isEmpty()) && /\.svg$/i.test(iconPath)) {
+            const svg = fs.readFileSync(iconPath, 'utf8');
+            const svgDataUrl = `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
+            img = nativeImage.createFromDataURL(svgDataUrl);
+          }
         }
         if (!img || img.isEmpty()) return undefined;
+        const shouldTemplate =
+          explicitTemplate ?? (iconDataUrl.startsWith('data:image/svg+xml') ? true : false);
+        const resized = img.resize({ width: 16, height: 16 });
         try {
-          img.setTemplateImage(false);
+          resized.setTemplateImage(shouldTemplate);
         } catch {}
-        return img.resize({ width: 16, height: 16 });
+        return resized;
       } catch {}
       return undefined;
     };
@@ -8107,6 +8229,7 @@ return appURL's |path|() as text`,
   schedulePromptWindowPrewarm();
   registerGlobalShortcut(settings.globalShortcut);
   registerCommandHotkeys(settings.commandHotkeys);
+  registerDevToolsShortcut();
 
   // Fallback: when another SuperCmd window gains focus (e.g. Settings),
   // close the launcher in default mode even if a native blur event was missed.
