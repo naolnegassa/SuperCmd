@@ -4562,6 +4562,31 @@ function buildSettingsHash(payload?: SettingsNavigationPayload): string {
   return query ? `/settings?${query}` : '/settings';
 }
 
+function isCloseWindowShortcutInput(input: any): boolean {
+  const inputType = String(input?.type || '').toLowerCase();
+  if (inputType !== 'keydown') return false;
+
+  const key = String(input?.key || '').toLowerCase();
+  const code = String(input?.code || '').toLowerCase();
+  if (key !== 'w' && code !== 'keyw') return false;
+
+  if (process.platform === 'darwin') {
+    return Boolean(input.meta) && !input.control && !input.alt;
+  }
+
+  return Boolean(input.control) && !input.meta && !input.alt;
+}
+
+function registerCloseWindowShortcut(win: InstanceType<typeof BrowserWindow>): void {
+  win.webContents.on('before-input-event', (event: any, input: any) => {
+    if (!isCloseWindowShortcutInput(input)) return;
+    event.preventDefault();
+    if (!win.isDestroyed()) {
+      win.close();
+    }
+  });
+}
+
 function openSettingsWindow(payload?: SettingsNavigationPayload): void {
   if (settingsWindow) {
     if (payload) {
@@ -4612,6 +4637,7 @@ function openSettingsWindow(payload?: SettingsNavigationPayload): void {
       preload: path.join(__dirname, 'preload.js'),
     },
   });
+  registerCloseWindowShortcut(settingsWindow);
 
   const hash = buildSettingsHash(payload);
   loadWindowUrl(settingsWindow, hash);
@@ -4679,6 +4705,7 @@ function openExtensionStoreWindow(): void {
       preload: path.join(__dirname, 'preload.js'),
     },
   });
+  registerCloseWindowShortcut(extensionStoreWindow);
 
   loadWindowUrl(extensionStoreWindow, '/extension-store');
 
