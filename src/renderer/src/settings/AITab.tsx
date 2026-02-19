@@ -22,7 +22,11 @@ import {
 } from 'lucide-react';
 import HotkeyRecorder from './HotkeyRecorder';
 import type { AppSettings, AISettings, EdgeTtsVoice, ElevenLabsVoice } from '../../types/electron';
-import { getCachedElevenLabsVoices, setCachedElevenLabsVoices } from '../utils/voice-cache';
+import {
+  clearElevenLabsVoiceCache,
+  getCachedElevenLabsVoices,
+  setCachedElevenLabsVoices,
+} from '../utils/voice-cache';
 
 const PROVIDER_OPTIONS = [
   { id: 'openai' as const, label: 'OpenAI', description: 'GPT family models' },
@@ -255,6 +259,7 @@ const AITab: React.FC = () => {
         const result = await window.electron.elevenLabsListVoices();
         if (cancelled) return;
         if (result.error) {
+          clearElevenLabsVoiceCache();
           setElevenLabsVoicesError(result.error);
           setElevenLabsVoices([]);
         } else {

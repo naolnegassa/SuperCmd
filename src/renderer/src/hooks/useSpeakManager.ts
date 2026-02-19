@@ -18,7 +18,11 @@ import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import type { EdgeTtsVoice, ElevenLabsVoice } from '../../types/electron';
 import { buildReadVoiceOptions, type ReadVoiceOption } from '../utils/command-helpers';
 import { useDetachedPortalWindow } from '../useDetachedPortalWindow';
-import { getCachedElevenLabsVoices, setCachedElevenLabsVoices } from '../utils/voice-cache';
+import {
+  clearElevenLabsVoiceCache,
+  getCachedElevenLabsVoices,
+  setCachedElevenLabsVoices,
+} from '../utils/voice-cache';
 
 const ELEVENLABS_VOICES: Array<{ id: string; label: string }> = [
   { id: '21m00Tcm4TlvDq8ikWAM', label: 'Rachel' },
@@ -176,14 +180,21 @@ export function useSpeakManager({
     window.electron.elevenLabsListVoices()
       .then((result) => {
         if (disposed) return;
-        if (result.voices) {
-          setElevenLabsVoices(result.voices);
-          // Update shared cache
-          setCachedElevenLabsVoices(result.voices);
+        if (result.error) {
+          clearElevenLabsVoiceCache();
+          setElevenLabsVoices([]);
+          return;
         }
+        const nextVoices = Array.isArray(result.voices) ? result.voices : [];
+        setElevenLabsVoices(nextVoices);
+        // Update shared cache only with non-empty successful results.
+        setCachedElevenLabsVoices(nextVoices);
       })
       .catch(() => {
-        if (!disposed) setElevenLabsVoices([]);
+        if (!disposed) {
+          clearElevenLabsVoiceCache();
+          setElevenLabsVoices([]);
+        }
       });
     return () => {
       disposed = true;

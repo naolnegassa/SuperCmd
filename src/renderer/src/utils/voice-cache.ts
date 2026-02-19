@@ -50,10 +50,23 @@ export function getCachedElevenLabsVoices(): ElevenLabsVoice[] | null {
     return null;
   }
 
+  // Do not treat empty lists as a stable cache hit. Empty caches can come from
+  // transient network/auth failures and should trigger a fresh fetch next time.
+  if (!Array.isArray(cached.voices) || cached.voices.length === 0) {
+    try {
+      localStorage.removeItem(CACHE_KEY);
+    } catch {}
+    return null;
+  }
+
   return cached.voices;
 }
 
 export function setCachedElevenLabsVoices(voices: ElevenLabsVoice[]): void {
+  if (!Array.isArray(voices) || voices.length === 0) {
+    clearElevenLabsVoiceCache();
+    return;
+  }
   const entry: CacheEntry = {
     voices,
     timestamp: Date.now(),
